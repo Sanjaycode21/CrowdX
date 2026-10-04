@@ -1,0 +1,45 @@
+# CrowdGuard Risk Configuration
+version: "1.0"
+
+# ROI surface area in square meters
+roi_area_sqm: 250.0
+
+# Sampling & Processing settings
+fps: 15.0
+frame_skip: 1
+detection_confidence: 0.50
+
+# Crowd Density Thresholds (people per square meter)
+density_thresholds:
+  low: 1.0       # <= 1.0 p/m2
+  medium: 2.5    # <= 2.5 p/m2
+  high: 4.0      # <= 4.0 p/m2
+  critical: 5.5  # > 4.0 p/m2
+
+# Risk Factor Weights (must sum to 1.0)
+risk_weights:
+  density: 0.30
+  acceleration: 0.20
+  turbulence: 0.20
+  direction_entropy: 0.10
+  convergence: 0.10
+  persistence: 0.10
+
+# Risk Level Score Ranges (0 - 100)
+risk_level_bounds:
+  low: [0, 25]
+  medium: [26, 50]
+  high: [51, 75]
+  critical: [76, 100]
+
+# Temporal Logic Settings
+temporal:
+  window_size_seconds: 5.0    # Moving average window
+  persistence_duration_seconds: 8.0  # Time condition must persist before escalation
+  hysteresis_margin: 5.0     # Score margin required to drop risk level to prevent flickering
+
+# Baseline Movement Defaults (meters/sec)
+baseline_movement:
+  average_speed: 1.2
+  max_speed: 3.5
+  normal_acceleration_max: 0.5
