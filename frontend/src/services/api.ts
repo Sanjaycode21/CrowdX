@@ -210,3 +210,187 @@ export async function postScenario(scenario: DemoScenario, mode: 'AI' | 'RULE'):
   } catch (e) {}
   return { message: 'Scenario updated' };
 }
+
+export async function postSensorData(sensorData: any): Promise<any> {
+  const startTime = performance.now();
+  try {
+    const res = await fetch(`${BASE_URL}/sensor/ingest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sensorData)
+    });
+    if (res.ok) {
+      const data = await res.json();
+      data.execution_latency_ms = Math.round((performance.now() - startTime) * 10) / 10;
+      return data;
+    }
+  } catch (e) {
+    console.warn("Backend sensor ingestion endpoint unavailable, falling back to local computation:", e);
+  }
+
+  // Graceful local calculation fallback if backend server is starting
+  const people = sensorData.people_count || 300;
+  const roi = sensorData.roi_area_sqm || 250;
+  const density = Math.round((people / roi) * 100) / 100;
+  const speed = sensorData.average_speed_ms || 1.2;
+  const accel = sensorData.acceleration_ms2 || 0.1;
+  const variance = sensorData.velocity_variance || 0.5;
+  const entropy = sensorData.direction_entropy_pct || 20;
+  const conv = sensorData.convergence_pct || 15;
+  
+  const dNorm = Math.min(100, (density / 5.0) * 100);
+  const aNorm = Math.min(100, (accel / 2.0) * 100);
+  const turb = Math.min(100, Math.round(((density * variance) / 4.5) * 100));
+  const rawScore = (dNorm * 0.3) + (aNorm * 0.2) + (turb * 0.2) + (entropy * 0.1) + (conv * 0.1);
+  const score = Math.min(100, Math.round((rawScore / 0.9) * 10) / 10);
+  let lvl = 'LOW';
+  if (score > 75) lvl = 'CRITICAL';
+  else if (score > 50) lvl = 'HIGH';
+  else if (score > 25) lvl = 'MEDIUM';
+
+  return {
+    status: 'LOCAL_FALLBACK',
+    timestamp: new Date().toLocaleTimeString(),
+    sensor_id: sensorData.sensor_id || 'LOCAL-SENSOR',
+    people_count: people,
+    roi_area_sqm: roi,
+    density_ppm2: density,
+    density_status: lvl,
+    speed_ms: speed,
+    acceleration_ms2: accel,
+    velocity_variance: variance,
+    turbulence_pct: turb,
+    direction_entropy_pct: entropy,
+    direction_label: entropy > 65 ? 'CHAOTIC FLOW' : entropy > 35 ? 'MODERATE VARIATION' : 'UNIFORM FLOW',
+    convergence_pct: conv,
+    convergence_msg: conv > 50 ? `High convergence near ${sensorData.exit_zone_name || 'Exit A'}` : 'Normal flow',
+    risk_score: score,
+    raw_risk_score: score,
+    risk_level: lvl,
+    is_persisting: score > 50,
+    elevated_duration_seconds: score > 50 ? 8 : 0,
+    factors: [
+      { name: 'Crowd Density', score: Math.round(dNorm), weight_pct: 30, contribution: Math.round(dNorm * 0.3), severity: dNorm > 70 ? 'critical' : dNorm > 50 ? 'high' : 'low' },
+      { name: 'Movement Acceleration', score: Math.round(aNorm), weight_pct: 20, contribution: Math.round(aNorm * 0.2), severity: aNorm > 70 ? 'critical' : aNorm > 50 ? 'high' : 'low' },
+      { name: 'Crowd Turbulence', score: turb, weight_pct: 20, contribution: Math.round(turb * 0.2), severity: turb > 70 ? 'critical' : turb > 50 ? 'high' : 'low' },
+      { name: 'Direction Disorder', score: Math.round(entropy), weight_pct: 10, contribution: Math.round(entropy * 0.1), severity: entropy > 70 ? 'critical' : 'low' },
+      { name: 'Gate Convergence', score: Math.round(conv), weight_pct: 10, contribution: Math.round(conv * 0.1), severity: conv > 70 ? 'critical' : 'low' }
+    ],
+    explanation: `Calculated from sensor ${sensorData.sensor_id || 'NODE-01'}: density ${density} p/m² and turbulence ${turb}%.`,
+    alert_triggered: score > 50,
+    alert_id: score > 50 ? 'ALT-SENSOR' : undefined,
+    mode: sensorData.mode || 'AI',
+    execution_latency_ms: Math.round((performance.now() - startTime) * 10) / 10
+  };
+}
+
+export async function fetchSamplePresets(): Promise<any> {
+  try {
+    const res = await fetch(`${BASE_URL}/sensor/sample`);
+    if (res.ok) return await res.json();
+  } catch (e) {}
+  return {
+    normal_flow: {
+      name: "Normal Baseline Flow",
+      description: "Safe crowd condition within normal movement baselines (LOW Risk)",
+      data: {
+        people_count: 240,
+        average_speed_ms: 1.2,
+        acceleration_ms2: 0.1,
+        velocity_variance: 0.3,
+        direction_entropy_pct: 22.0,
+        convergence_pct: 14.0,
+        exit_zone_name: "Gate A",
+        roi_area_sqm: 250.0,
+        sensor_id: "OPT-FLOW-GATE-A",
+        mode: "AI"
+      }
+    },
+    dense_influx: {
+      name: "Dense Influx (Moderate)",
+      description: "Increasing crowd gathering before event start (MEDIUM Risk)",
+      data: {
+        people_count: 720,
+        average_speed_ms: 1.1,
+        acceleration_ms2: 0.4,
+        velocity_variance: 0.9,
+        direction_entropy_pct: 40.0,
+        convergence_pct: 32.0,
+        exit_zone_name: "Main Hall",
+        roi_area_sqm: 250.0,
+        sensor_id: "CAM-HALL-NORTH",
+        mode: "AI"
+      }
+    },
+    sudden_surge: {
+      name: "Sudden Movement Surge (High Accel)",
+      description: "Sudden running or abrupt motion change detected by radar (HIGH Risk)",
+      data: {
+        people_count: 680,
+        average_speed_ms: 3.2,
+        acceleration_ms2: 2.1,
+        velocity_variance: 2.2,
+        direction_entropy_pct: 58.0,
+        convergence_pct: 48.0,
+        exit_zone_name: "Gate B",
+        roi_area_sqm: 250.0,
+        sensor_id: "RADAR-SURGE-02",
+        mode: "AI"
+      }
+    },
+    chaotic_turbulence: {
+      name: "Chaotic Movement (High Turbulence)",
+      description: "Disorderly multi-directional stop-and-go crowd motion (HIGH Risk)",
+      data: {
+        people_count: 940,
+        average_speed_ms: 2.5,
+        acceleration_ms2: 1.6,
+        velocity_variance: 3.6,
+        direction_entropy_pct: 84.0,
+        convergence_pct: 55.0,
+        exit_zone_name: "Gate B",
+        roi_area_sqm: 250.0,
+        sensor_id: "LIDAR-AISLE-05",
+        mode: "AI"
+      }
+    },
+    critical_stampede_precursor: {
+      name: "Critical Stampede Precursor",
+      description: "Severe overcrowding converging violently toward narrow exit (CRITICAL Risk)",
+      data: {
+        people_count: 1380,
+        average_speed_ms: 3.6,
+        acceleration_ms2: 2.5,
+        velocity_variance: 4.5,
+        direction_entropy_pct: 89.0,
+        convergence_pct: 95.0,
+        exit_zone_name: "Exit A",
+        roi_area_sqm: 250.0,
+        sensor_id: "SENSOR-BOTTLENECK-01",
+        mode: "AI"
+      }
+    }
+  };
+}
+
+export async function resetSensorMode(): Promise<any> {
+  try {
+    const res = await fetch(`${BASE_URL}/sensor/reset`, { method: 'POST' });
+    if (res.ok) return await res.json();
+  } catch (e) {}
+  return { status: 'RESET' };
+}
+
+export async function checkBackendStatus(): Promise<{ online: boolean; pingMs: number; mode: string }> {
+  const start = performance.now();
+  try {
+    const res = await fetch(`${BASE_URL}/health`);
+    if (res.ok) {
+      const ping = Math.round(performance.now() - start);
+      const data = await res.json();
+      return { online: true, pingMs: ping, mode: data.mode || 'AI' };
+    }
+  } catch (e) {}
+  return { online: false, pingMs: 0, mode: 'AI' };
+}
+

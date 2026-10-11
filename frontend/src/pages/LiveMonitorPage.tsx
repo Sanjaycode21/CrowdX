@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { Play, Pause, RotateCcw, CheckSquare, Square, Video, Layers } from 'lucide-react';
-import { RiskCurrentData } from '../types/crowd';
+import { RiskCurrentData, SensorProcessResponse } from '../types/crowd';
 import { LiveVideoCanvas } from '../components/LiveVideoCanvas';
 import { FactorPanel } from '../components/FactorPanel';
+import { SensorTelemetryLab } from '../components/SensorTelemetryLab';
 import { DemoScenario } from '../services/demoSimulator';
 
 interface LiveMonitorPageProps {
@@ -11,6 +12,8 @@ interface LiveMonitorPageProps {
   onSelectScenario: (scen: DemoScenario) => void;
   isAnalyzing: boolean;
   onTogglePlay: () => void;
+  onSensorProcessed: (res: SensorProcessResponse) => void;
+  onResetSensor: () => void;
 }
 
 export const LiveMonitorPage: React.FC<LiveMonitorPageProps> = ({
@@ -18,7 +21,9 @@ export const LiveMonitorPage: React.FC<LiveMonitorPageProps> = ({
   scenario,
   onSelectScenario,
   isAnalyzing,
-  onTogglePlay
+  onTogglePlay,
+  onSensorProcessed,
+  onResetSensor
 }) => {
   // Overlays state
   const [showBoxes, setShowBoxes] = useState<boolean>(true);
@@ -26,6 +31,7 @@ export const LiveMonitorPage: React.FC<LiveMonitorPageProps> = ({
   const [showHeatmap, setShowHeatmap] = useState<boolean>(true);
   const [showROI, setShowROI] = useState<boolean>(true);
   const [showExit, setShowExit] = useState<boolean>(true);
+  const [usePhotoBackdrop, setUsePhotoBackdrop] = useState<boolean>(false);
 
   const scenarios: DemoScenario[] = [
     'Normal Crowd',
@@ -86,6 +92,7 @@ export const LiveMonitorPage: React.FC<LiveMonitorPageProps> = ({
             showHeatmap={showHeatmap}
             showROI={showROI}
             showExit={showExit}
+            usePhotoBackdrop={usePhotoBackdrop}
           />
 
           {/* Overlay Toggles Panel */}
@@ -169,6 +176,14 @@ export const LiveMonitorPage: React.FC<LiveMonitorPageProps> = ({
           <FactorPanel data={data} />
         </div>
       </div>
+
+      {/* Interactive Sensor Telemetry & Backend Evaluation Lab */}
+      <SensorTelemetryLab
+        onSensorProcessed={onSensorProcessed}
+        onResetCamera={onResetSensor}
+        usePhotoBackdrop={usePhotoBackdrop}
+        onTogglePhotoBackdrop={setUsePhotoBackdrop}
+      />
     </div>
   );
 };

@@ -148,3 +148,52 @@ export interface LogEntry {
   severity: 'INFO' | 'WARNING' | 'ERROR';
   details: string;
 }
+
+export interface SensorDataInput {
+  people_count: number;
+  average_speed_ms: number;
+  acceleration_ms2: number;
+  velocity_variance: number;
+  direction_entropy_pct: number;
+  convergence_pct: number;
+  exit_zone_name?: string;
+  roi_area_sqm?: number;
+  sensor_id?: string;
+  mode?: 'AI' | 'RULE';
+}
+
+export interface SensorProcessResponse {
+  status: string;
+  timestamp: string;
+  sensor_id: string;
+  people_count: number;
+  roi_area_sqm: number;
+  density_ppm2: number;
+  density_status: string;
+  speed_ms: number;
+  acceleration_ms2: number;
+  velocity_variance: number;
+  turbulence_pct: number;
+  direction_entropy_pct: number;
+  direction_label: string;
+  convergence_pct: number;
+  convergence_msg: string;
+  risk_score: number;
+  raw_risk_score: number;
+  risk_level: RiskLevel;
+  is_persisting: boolean;
+  elevated_duration_seconds: number;
+  factors: FactorDetail[];
+  explanation: string;
+  alert_triggered: boolean;
+  alert_id?: string;
+  mode: string;
+  execution_latency_ms?: number;
+}
+
+export interface SampleSensorPreset {
+  name: string;
+  description: string;
+  data: SensorDataInput;
+}
+

@@ -135,6 +135,44 @@ export const App: React.FC = () => {
     setLogs(l);
   };
 
+  // Sensor Handlers
+  const handleSensorProcessed = async (res: any) => {
+    const currentData: RiskCurrentData = {
+      score: res.risk_score,
+      raw_score: res.raw_risk_score,
+      level: res.risk_level,
+      is_persisting: res.is_persisting,
+      elevated_duration_seconds: res.elevated_duration_seconds,
+      factors: res.factors,
+      explanation: res.explanation,
+      people_count: res.people_count,
+      density_ppm2: res.density_ppm2,
+      speed_ms: res.speed_ms,
+      acceleration_ms2: res.acceleration_ms2,
+      turbulence_pct: res.turbulence_pct,
+      direction_entropy_pct: res.direction_entropy_pct,
+      direction_label: res.direction_label,
+      convergence_pct: res.convergence_pct,
+      convergence_msg: res.convergence_msg,
+      mode: res.mode as 'AI' | 'RULE',
+      fps: 30.0,
+      confidence: res.mode === 'AI' ? 0.94 : 0.70,
+      scenario: `Live Sensor: ${res.sensor_id}`
+    };
+    setCurrentRisk(currentData);
+
+    // Refresh active alerts and audit logs from backend
+    const updatedAlerts = await fetchAlerts();
+    setAlerts(updatedAlerts);
+    const updatedLogs = await fetchLogs();
+    setLogs(updatedLogs);
+  };
+
+  const handleResetSensor = async () => {
+    const data = await fetchCurrentRisk(scenario, mode);
+    setCurrentRisk(data);
+  };
+
   const activeAlert = alerts.find(a => a.status === 'Active' && (a.level === 'HIGH' || a.level === 'CRITICAL'));
 
   return (
@@ -176,6 +214,8 @@ export const App: React.FC = () => {
               onSelectScenario={handleSelectScenario}
               isAnalyzing={isAnalyzing}
               onTogglePlay={() => setIsAnalyzing(!isAnalyzing)}
+              onSensorProcessed={handleSensorProcessed}
+              onResetSensor={handleResetSensor}
             />
           )}
 

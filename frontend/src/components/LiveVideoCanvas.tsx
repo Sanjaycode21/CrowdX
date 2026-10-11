@@ -8,6 +8,7 @@ interface LiveVideoCanvasProps {
   showHeatmap: boolean;
   showROI: boolean;
   showExit: boolean;
+  usePhotoBackdrop?: boolean;
 }
 
 export const LiveVideoCanvas: React.FC<LiveVideoCanvasProps> = ({
@@ -16,9 +17,19 @@ export const LiveVideoCanvas: React.FC<LiveVideoCanvasProps> = ({
   showVectors,
   showHeatmap,
   showROI,
-  showExit
+  showExit,
+  usePhotoBackdrop = false
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
+
+  useEffect(() => {
+    const img = new Image();
+    img.src = '/facility_camera.jpg';
+    img.onload = () => {
+      imageRef.current = img;
+    };
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -34,25 +45,32 @@ export const LiveVideoCanvas: React.FC<LiveVideoCanvasProps> = ({
       const width = canvas.width;
       const height = canvas.height;
 
-      // 1. Base Surveillance Camera Background (Simulated Video Surface)
-      ctx.fillStyle = '#0f172a'; // Deep slate camera feed background
-      ctx.fillRect(0, 0, width, height);
+      // 1. Base Surveillance Feed
+      if (usePhotoBackdrop && imageRef.current) {
+        ctx.drawImage(imageRef.current, 0, 0, width, height);
+        // Surveillance dark tint overlay
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.45)';
+        ctx.fillRect(0, 0, width, height);
+      } else {
+        // Deep slate camera feed background with grid
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(0, 0, width, height);
 
-      // Grid floor pattern simulating stadium concourse / hall floor
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
-      ctx.lineWidth = 1;
-      const gridSize = 40;
-      for (let x = 0; x < width; x += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, height);
-        ctx.stroke();
-      }
-      for (let y = 0; y < height; y += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(width, y);
-        ctx.stroke();
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
+        ctx.lineWidth = 1;
+        const gridSize = 40;
+        for (let x = 0; x < width; x += gridSize) {
+          ctx.beginPath();
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, height);
+          ctx.stroke();
+        }
+        for (let y = 0; y < height; y += gridSize) {
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(width, y);
+          ctx.stroke();
+        }
       }
 
       // Render Crowd Dots (Simulated People)

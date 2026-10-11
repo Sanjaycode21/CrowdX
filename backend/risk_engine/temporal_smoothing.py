@@ -65,8 +65,11 @@ class TemporalSmoother:
         curr = self.current_level
 
         # Escalation rules
-        if target_level == "CRITICAL" and is_persisting:
-            return "CRITICAL"
+        if target_level == "CRITICAL":
+            if is_persisting:
+                return "CRITICAL"
+            # Elevate to HIGH while persistence timer verifies condition duration
+            return "HIGH"
         elif target_level == "HIGH":
             if curr in ["LOW", "MEDIUM"]:
                 return "HIGH" if is_persisting else "MEDIUM"

@@ -12,11 +12,13 @@ from backend.detector.yolo_detector import yolo_detector
 from backend.detector.rule_detector import rule_detector
 from backend.density.density_analyzer import density_analyzer
 from backend.motion.motion_analyzer import motion_analyzer
+from backend.motion.turbulence import compute_turbulence
 from backend.risk_engine.risk_calculator import risk_calculator
 from backend.api.models import (
     HealthResponse, RiskCurrentResponse, AlertItem, 
     IncidentCreateRequest, IncidentUpdateRequest, 
-    ConfigUpdateRequest, ScenarioChangeRequest
+    ConfigUpdateRequest, ScenarioChangeRequest,
+    SensorDataInput, SensorProcessResponse
 )
 
 router = APIRouter()
@@ -26,7 +28,9 @@ STATE = {
     "is_analyzing": True,
     "mode": "AI", # "AI" or "RULE"
     "current_scenario": "Normal Crowd",
-    "video_filename": "live_feed_gate_b.mp4"
+    "video_filename": "live_feed_gate_b.mp4",
+    "source_type": "scenario", # "scenario" or "sensor"
+    "latest_sensor_data": None
 }
 
 # Shared historical risk series buffer
@@ -44,6 +48,7 @@ def get_health():
 @router.post("/scenario")
 def set_scenario(req: ScenarioChangeRequest):
     STATE["current_scenario"] = req.scenario
+    STATE["source_type"] = "scenario"
     if req.mode:
         STATE["mode"] = req.mode.upper()
     sys_logger.log("Detector", f"Switched to scenario '{req.scenario}' in {STATE['mode']} mode", "INFO")
@@ -51,6 +56,9 @@ def set_scenario(req: ScenarioChangeRequest):
 
 @router.get("/risk/current")
 def get_current_risk(db: Session = Depends(get_db)):
+    if STATE.get("source_type") == "sensor" and STATE.get("latest_sensor_data"):
+        return STATE["latest_sensor_data"]
+
     scenario = STATE["current_scenario"]
     mode = STATE["mode"]
 
@@ -282,3 +290,316 @@ async def upload_video(file: UploadFile = File(...)):
     STATE["video_filename"] = file.filename
     sys_logger.log("Video Engine", f"Uploaded video file: {file.filename}", "INFO")
     return {"message": "Video uploaded successfully", "filename": file.filename}
+
+@router.post("/sensor/ingest", response_model=SensorProcessResponse)
+def ingest_sensor_data(req: SensorDataInput, db: Session = Depends(get_db)):
+    """
+    Ingests live or simulated crowd sensor readings (people count, speed, acceleration,
+    velocity variance, direction entropy, convergence) and executes the complete backend
+    density, motion, turbulence, temporal persistence, and explainable risk pipeline.
+    """
+    mode = req.mode.upper() if req.mode else STATE["mode"]
+    STATE["mode"] = mode
+    STATE["source_type"] = "sensor"
+
+    # 1. Density Calculation (using custom ROI if specified, else config)
+    cfg = config_manager.get_config()
+    roi_area = float(req.roi_area_sqm if req.roi_area_sqm and req.roi_area_sqm > 0 else cfg.get("roi_area_sqm", 250.0))
+    density_val = round(req.people_count / max(roi_area, 1.0), 2)
+    thresholds = cfg.get("density_thresholds", {"low": 1.0, "medium": 2.5, "high": 4.0, "critical": 5.5})
+    
+    if density_val <= thresholds.get("low", 1.0):
+        density_status = "LOW"
+    elif density_val <= thresholds.get("medium", 2.5):
+        density_status = "MEDIUM"
+    elif density_val <= thresholds.get("high", 4.0):
+        density_status = "HIGH"
+    else:
+        density_status = "CRITICAL"
+
+    density_res = {
+        "people_count": req.people_count,
+        "estimated_dense_people": req.people_count,
+        "roi_area_sqm": roi_area,
+        "density_ppm2": density_val,
+        "status": density_status,
+        "foreground_motion_ratio": 0.0
+    }
+
+    # 2. Turbulence Calculation (Density x Velocity Variance)
+    turbulence_pct = compute_turbulence(density_val, req.velocity_variance)
+
+    # 3. Direction Entropy Classification
+    if req.direction_entropy_pct < 35.0:
+        dir_label = "UNIFORM FLOW"
+    elif req.direction_entropy_pct < 65.0:
+        dir_label = "MODERATE VARIATION"
+    else:
+        dir_label = "CHAOTIC FLOW"
+
+    # 4. Exit Convergence
+    exit_zone_name = req.exit_zone_name or "Exit A"
+    is_converging = req.convergence_pct >= 50.0
+    if is_converging:
+        conv_msg = f"High crowd convergence detected near {exit_zone_name}"
+    else:
+        conv_msg = f"Normal flow distribution near {exit_zone_name}"
+
+    # Generate visual vectors and boxes matching sensor telemetry
+    num_vectors = min(40, max(12, int(req.people_count / 25)))
+    sim_vectors = []
+    for _ in range(num_vectors):
+        if req.direction_entropy_pct > 65.0:
+            angle = random.uniform(0, 6.28)
+        elif is_converging:
+            angle = random.uniform(-0.8, -0.1) # pointing toward top right exit
+        else:
+            angle = random.uniform(-0.3, 0.3)
+        mag = max(0.5, req.average_speed_ms)
+        sim_vectors.append({
+            "x": round(random.uniform(40, 600), 1),
+            "y": round(random.uniform(40, 320), 1),
+            "dx": round(mag * (random.uniform(0.7, 1.3)), 2),
+            "dy": round(random.uniform(-0.6, 0.6), 2),
+            "speed": round(mag, 2)
+        })
+
+    boxes = []
+    num_boxes = min(35, max(8, int(req.people_count / 30)))
+    for i in range(num_boxes):
+        boxes.append({
+            "id": i,
+            "x": round(random.uniform(30, 580), 1),
+            "y": round(random.uniform(40, 300), 1),
+            "w": round(random.uniform(18, 28), 1),
+            "h": round(random.uniform(34, 52), 1),
+            "confidence": round(random.uniform(0.82, 0.98), 2),
+            "class": "person" if mode == "AI" else "blob"
+        })
+
+    motion_data = {
+        "vectors": sim_vectors,
+        "average_speed_ms": req.average_speed_ms,
+        "baseline_speed_ms": 1.2,
+        "speed_delta": round(req.average_speed_ms - 1.2, 2),
+        "acceleration_ms2": req.acceleration_ms2,
+        "velocity_variance": req.velocity_variance,
+        "turbulence_pct": turbulence_pct,
+        "direction_entropy_pct": req.direction_entropy_pct,
+        "direction_label": dir_label,
+        "convergence_pct": req.convergence_pct,
+        "is_converging": is_converging,
+        "convergence_msg": conv_msg
+    }
+
+    # 5. Risk Calculation Step
+    risk_res = risk_calculator.compute_risk(density_res, motion_data)
+
+    time_str = datetime.datetime.now().strftime("%H:%M:%S")
+
+    # Store measurement in DB
+    try:
+        db_meas = db_models.RiskMeasurementDB(
+            score=risk_res["score"],
+            level=risk_res["level"],
+            people_count=req.people_count,
+            density=density_val,
+            speed=req.average_speed_ms,
+            acceleration=req.acceleration_ms2,
+            turbulence=turbulence_pct,
+            direction_entropy=req.direction_entropy_pct,
+            convergence=req.convergence_pct,
+            mode=mode,
+            factors=risk_res["factors"]
+        )
+        db.add(db_meas)
+        db.commit()
+    except Exception as e:
+        sys_logger.log("Database", f"Error saving measurement: {str(e)}", "ERROR")
+
+    # 6. Record in Risk History Buffer
+    history_entry = {
+        "timestamp": time_str,
+        "score": risk_res["score"],
+        "level": risk_res["level"],
+        "people_count": req.people_count,
+        "density": density_val,
+        "speed": req.average_speed_ms,
+        "acceleration": req.acceleration_ms2,
+        "turbulence": turbulence_pct,
+        "direction_entropy": req.direction_entropy_pct,
+        "convergence": req.convergence_pct
+    }
+    RISK_HISTORY.append(history_entry)
+    if len(RISK_HISTORY) > 100:
+        RISK_HISTORY.pop(0)
+
+    # 7. Check & Trigger Alerts
+    alert_triggered = False
+    alert_id = None
+    if risk_res["level"] in ["HIGH", "CRITICAL"]:
+        reason = f"Sensor {req.sensor_id}: Density {density_val} p/m², Accel {req.acceleration_ms2} m/s², Turb {turbulence_pct}%"
+        alert = crud.create_alert(
+            db,
+            level=risk_res["level"],
+            score=risk_res["score"],
+            location=exit_zone_name,
+            reason=reason,
+            duration_seconds=risk_res["elevated_duration_seconds"]
+        )
+        alert_triggered = True
+        alert_id = alert.id
+        sys_logger.log("Alert Engine", f"{risk_res['level']} alert triggered from sensor {req.sensor_id}: {reason}", "WARNING")
+    else:
+        sys_logger.log("Sensor", f"Processed telemetry from {req.sensor_id}: Score {risk_res['score']} ({risk_res['level']})", "INFO")
+
+    # Update STATE cache so GET /risk/current returns this latest sensor state
+    STATE["latest_sensor_data"] = {
+        "score": risk_res["score"],
+        "raw_score": risk_res["raw_score"],
+        "level": risk_res["level"],
+        "is_persisting": risk_res["is_persisting"],
+        "elevated_duration_seconds": risk_res["elevated_duration_seconds"],
+        "factors": risk_res["factors"],
+        "explanation": risk_res["explanation"],
+        "people_count": req.people_count,
+        "density_ppm2": density_val,
+        "speed_ms": req.average_speed_ms,
+        "acceleration_ms2": req.acceleration_ms2,
+        "turbulence_pct": turbulence_pct,
+        "direction_entropy_pct": req.direction_entropy_pct,
+        "direction_label": dir_label,
+        "convergence_pct": req.convergence_pct,
+        "convergence_msg": conv_msg,
+        "mode": mode,
+        "boxes": boxes,
+        "vectors": sim_vectors,
+        "fps": 30.0,
+        "confidence": 0.94 if mode == "AI" else 0.70,
+        "scenario": f"Live Sensor: {req.sensor_id}",
+        "sensor_id": req.sensor_id,
+        "source": "sensor"
+    }
+
+    return SensorProcessResponse(
+        status="SUCCESS",
+        timestamp=time_str,
+        sensor_id=req.sensor_id or "SENSOR-NODE-01",
+        people_count=req.people_count,
+        roi_area_sqm=roi_area,
+        density_ppm2=density_val,
+        density_status=density_status,
+        speed_ms=req.average_speed_ms,
+        acceleration_ms2=req.acceleration_ms2,
+        velocity_variance=req.velocity_variance,
+        turbulence_pct=turbulence_pct,
+        direction_entropy_pct=req.direction_entropy_pct,
+        direction_label=dir_label,
+        convergence_pct=req.convergence_pct,
+        convergence_msg=conv_msg,
+        risk_score=risk_res["score"],
+        raw_risk_score=risk_res["raw_score"],
+        risk_level=risk_res["level"],
+        is_persisting=risk_res["is_persisting"],
+        elevated_duration_seconds=risk_res["elevated_duration_seconds"],
+        factors=risk_res["factors"],
+        explanation=risk_res["explanation"],
+        alert_triggered=alert_triggered,
+        alert_id=alert_id,
+        mode=mode
+    )
+
+@router.get("/sensor/sample")
+def get_sample_sensor_datasets():
+    """Returns ready-to-test sample sensor telemetry presets for testing the backend risk pipeline."""
+    return {
+        "normal_flow": {
+            "name": "Normal Baseline Flow",
+            "description": "Safe crowd condition within normal movement baselines (LOW Risk)",
+            "data": {
+                "people_count": 240,
+                "average_speed_ms": 1.2,
+                "acceleration_ms2": 0.1,
+                "velocity_variance": 0.3,
+                "direction_entropy_pct": 22.0,
+                "convergence_pct": 14.0,
+                "exit_zone_name": "Gate A",
+                "roi_area_sqm": 250.0,
+                "sensor_id": "OPT-FLOW-GATE-A",
+                "mode": "AI"
+            }
+        },
+        "dense_influx": {
+            "name": "Dense Influx (Moderate)",
+            "description": "Increasing crowd gathering before event start (MEDIUM Risk)",
+            "data": {
+                "people_count": 720,
+                "average_speed_ms": 1.1,
+                "acceleration_ms2": 0.4,
+                "velocity_variance": 0.9,
+                "direction_entropy_pct": 40.0,
+                "convergence_pct": 32.0,
+                "exit_zone_name": "Main Hall",
+                "roi_area_sqm": 250.0,
+                "sensor_id": "CAM-HALL-NORTH",
+                "mode": "AI"
+            }
+        },
+        "sudden_surge": {
+            "name": "Sudden Movement Surge (High Accel)",
+            "description": "Sudden running or abrupt motion change detected by radar (HIGH Risk)",
+            "data": {
+                "people_count": 680,
+                "average_speed_ms": 3.2,
+                "acceleration_ms2": 2.1,
+                "velocity_variance": 2.2,
+                "direction_entropy_pct": 58.0,
+                "convergence_pct": 48.0,
+                "exit_zone_name": "Gate B",
+                "roi_area_sqm": 250.0,
+                "sensor_id": "RADAR-SURGE-02",
+                "mode": "AI"
+            }
+        },
+        "chaotic_turbulence": {
+            "name": "Chaotic Movement (High Turbulence)",
+            "description": "Disorderly multi-directional stop-and-go crowd motion (HIGH Risk)",
+            "data": {
+                "people_count": 940,
+                "average_speed_ms": 2.5,
+                "acceleration_ms2": 1.6,
+                "velocity_variance": 3.6,
+                "direction_entropy_pct": 84.0,
+                "convergence_pct": 55.0,
+                "exit_zone_name": "Gate B",
+                "roi_area_sqm": 250.0,
+                "sensor_id": "LIDAR-AISLE-05",
+                "mode": "AI"
+            }
+        },
+        "critical_stampede_precursor": {
+            "name": "Critical Stampede Precursor",
+            "description": "Severe overcrowding converging violently toward narrow exit (CRITICAL Risk)",
+            "data": {
+                "people_count": 1380,
+                "average_speed_ms": 3.6,
+                "acceleration_ms2": 2.5,
+                "velocity_variance": 4.5,
+                "direction_entropy_pct": 89.0,
+                "convergence_pct": 95.0,
+                "exit_zone_name": "Exit A",
+                "roi_area_sqm": 250.0,
+                "sensor_id": "SENSOR-BOTTLENECK-01",
+                "mode": "AI"
+            }
+        }
+    }
+
+@router.post("/sensor/reset")
+def reset_sensor_mode():
+    """Resets the backend source back to synthetic scenario simulation."""
+    STATE["source_type"] = "scenario"
+    STATE["latest_sensor_data"] = None
+    sys_logger.log("Sensor", "Reset sensor source back to scenario simulation", "INFO")
+    return {"message": "Reset to scenario mode", "state": STATE}
+
